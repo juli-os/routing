@@ -1,0 +1,39 @@
+{
+  "name": "@juli-os/routing",
+  "version": "0.1.0",
+  "description": "juli-os L4 layer: multi-agent dispatch decisions — declarative agent routing, busy-diversion, sender-domain claims, and a pluggable judgment gateway. Pure functions over injected facts.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "juli-routing": "./dist/juli-routing.js"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js && esbuild bin/juli-routing.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/juli-routing.js && chmod +x dist/juli-routing.js && python3 scripts/postbuild.py",
+    "test": "node --test \"test/*.test.ts\"",
+    "smoke:dist": "node --input-type=module -e \"import('./dist/index.js').then(m => { if (typeof m.decideRoute !== 'function' || typeof m.routeTask !== 'function') process.exit(1); console.log('DIST SMOKE OK'); })\"",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@juli-os/artifacts": "^0.2.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "license": "Apache-2.0"
+}
