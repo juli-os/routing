@@ -1,11 +1,16 @@
-// Jev（TypeSafe System One）判定客户端：语义判定的传输提供方。
-// 只做传输与响应形状校验——问题构造/阈值/轮次在消费方（plan.ts、judgment.ts
-// 网关）；引擎零改动。凭证=env JEV_TOKEN（用户 shell 注入，引擎不持有，
-// TYPESAFE_API_KEY 兜底）。出网边界（2026-09-23 更新）：旧纪律「jev 只进
-// CLI dry-run 面、不进每封进件」已由 judgment 网关接管——场景级 off/shadow/on
-// 热开关（judgment.json）裁断哪些路径允许出网（route_fallback 兜底腿、
-// intake_gate 起单门等），配置缺省=全场景 off 零网络；本文件不再自行圈定
-// 安全边界。Judge 端口可插拔，测试注入假判定器即零网络。
+// Jev (TypeSafe System One) judgment client: the transport provider for
+// semantic judgment. It only does transport and response shape validation —
+// question construction/thresholds/passes live with the consumers (plan.ts,
+// the judgment.ts gateway); zero engine changes. Credentials = env JEV_TOKEN
+// (injected by the user's shell, never held by the engine; TYPESAFE_API_KEY
+// as fallback). Egress boundary (updated 2026-09-23): the old discipline
+// "jev only on the CLI dry-run surface, never per intake email" is now
+// enforced by the judgment gateway — scenario-level off/shadow/on hot
+// switches (judgment.json) adjudicate which paths may reach the network
+// (route_fallback fallback leg, intake_gate case-opening gate, etc.); the
+// default config = all scenarios off, zero network; this file no longer
+// draws its own security boundary. The Judge port is pluggable — inject a
+// fake judge in tests for zero network.
 
 export interface JevAnswerNoul {
   readonly type: 'noul';
@@ -28,20 +33,22 @@ export interface JevResult {
   readonly answers: Readonly<Record<string, JevAnswer>>;
   readonly usage: {
     readonly input_tokens: number; readonly output_tokens: number;
-    /** z.ai 兼容（wf_66a9b632154d）：缓存命中——openai 形态 prompt_tokens_details.cached_tokens
-     *  或智谱原生 cached_tokens；本地/CLI 兜底为 0。 */
+    /** z.ai compatibility (wf_66a9b632154d): cache hits — OpenAI-style
+     *  prompt_tokens_details.cached_tokens or Zhipu-native cached_tokens;
+     *  local/CLI falls back to 0. */
     readonly cached_tokens?: number;
     readonly prompt_tokens_details?: { readonly cached_tokens?: number };
   };
 }
 
-/** 判定提供方端口（可插拔）：plan.ts 只认这个接口，不认 Jev 本身。 */
+/** Judgment provider port (pluggable): plan.ts only knows this interface,
+ * not Jev itself. */
 export interface Judge {
   readonly model: string;
   ask(state: unknown, questions: Readonly<Record<string, JevQuestion>>): Promise<JevResult>;
 }
 
-/** token 解析：JEV_TOKEN 优先，TYPESAFE_API_KEY 兜底。 */
+/** Token resolution: JEV_TOKEN first, TYPESAFE_API_KEY as fallback. */
 export const jevTokenFromEnv = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string => env['JEV_TOKEN'] ?? env['TYPESAFE_API_KEY'] ?? '';

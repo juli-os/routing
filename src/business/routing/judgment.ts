@@ -1,16 +1,21 @@
-// 语义判定网关（Jev/System One 生产接缝）：在 jev.ts 传输层之上做三件事——
-// ①场景开关（off/shadow/on，judgment.json 热读：改文件不重启生效，enable/
-//   disable 随时拔插）；②提供方可替换（cloud=TypeSafe API / local-api=任意
-//   同形 HTTP 端点 / cli=子进程 JSON stdin→stdout，本地部署零改码）；③降级
-//   纪律（判定失败/超时 → error 结果，消费方按默认行为走——jev 挂了不许挂
-//   管线）。问题构造与答案校验在消费方（决定留引擎，判定只做输入）。
-// 纪律继承：配置文件缺省 = 全场景 off + 零网络（jev 不进不请自来的路径）。
+// Semantic judgment gateway (the Jev/System One production seam): on top of
+// the jev.ts transport it does three things — ① scenario switches
+// (off/shadow/on, judgment.json hot-read: file edits take effect without
+// restart, enable/disable pluggable at any time); ② replaceable provider
+// (cloud = TypeSafe API / local-api = any same-shaped HTTP endpoint / cli =
+// subprocess JSON stdin→stdout, local deployment with zero code changes);
+// ③ degradation discipline (judgment failure/timeout → error outcome, the
+// consumer falls back to default behavior — a dead jev must not take the
+// pipeline down). Question construction and answer validation live with the
+// consumers (decisions stay in the engine; judgment is input only).
+// Inherited discipline: a missing config file = all scenarios off + zero
+// network (jev never enters paths that did not ask for it).
 
 import { existsSync, readFileSync } from 'node:fs';
 import { JUDGMENT_SCENARIOS, type JudgmentGateway, type JudgmentOutcome, type JudgmentScenario } from '../../contracts/ports.ts';
 import { createJev, jevTokenFromEnv, type JevAnswer, type JevResult, type Judge } from './jev.ts';
 
-// ---- 配置（~/.juli-service/judgment.json，每次判定重读=热生效） ----------------
+// ---- Config (~/.juli-service/judgment.json, re-read per judgment = hot reload) -
 
 export interface JudgmentConfig {
   readonly provider: 'cloud' | 'local-api' | 'cli';
@@ -35,8 +40,10 @@ export const parseJudgmentConfig = (raw: unknown): JudgmentConfig | null => {
     const known = new Set<string>(JUDGMENT_SCENARIOS);
     for (const [k, v] of Object.entries(rawScenarios as Record<string, unknown>)) {
       if (!MODES.includes(String(v))) continue;
-      // 未知场景键显式丢弃并留痕（judgment.json 是人工热读面——「想开
-      // aggregate_same 写成 aggregate_smae」若无反馈，影子评估期会静默空转）。
+      // Unknown scenario keys are explicitly dropped and logged (judgment.json
+      // is a human-edited hot-read surface — "meant to enable aggregate_same
+      // but typed aggregate_smae" would silently idle through the entire
+      // shadow evaluation period with zero feedback).
       if (!known.has(k)) {
         console.error(`[judgment] judgment.json unknown scenario key (dropped): ${k}`);
         continue;
@@ -49,30 +56,35 @@ export const parseJudgmentConfig = (raw: unknown): JudgmentConfig | null => {
     cloud: d['cloud'] as JudgmentConfig['cloud'],
     local_api: d['local_api'] as JudgmentConfig['local_api'],
     cli: d['cli'] as JudgmentConfig['cli'],
-    // timeout_ms 夹紧 [1s, 30s]：判定 await 在派发路径上持 per-workflow 锁与
-    // 收单台槽位（steps.ts fallback 腿）——巨值=配 600000 就能把队列挂住 10 分钟，
-    // 0/负=全部判定立即失败（降级安全但静默全废）。超界取边界值。
+    // timeout_ms is clamped to [1s, 30s]: the judgment await sits on the
+    // dispatch path holding a per-workflow lock and an intake-desk slot
+    // (steps.ts fallback leg) — a huge value like 600000 can hang the queue
+    // for 10 minutes, while 0/negative makes every judgment fail instantly
+    // (safe degradation, but silently all dead). Out-of-range values snap to
+    // the boundary.
     timeout_ms: typeof d['timeout_ms'] === 'number' ? Math.min(30_000, Math.max(1_000, d['timeout_ms'])) : undefined,
     min_confidence: typeof d['min_confidence'] === 'number' ? d['min_confidence'] : undefined,
     scenarios,
   };
 };
 
-/** 每次调用重读（feedback-mirror 同款热读语义）：改 JSON 即时生效。文件缺失
- * = 功能整体不存在（null → 全场景 off，零网络零构建）。 */
+/** Re-read on every call (same hot-read semantics as feedback-mirror): JSON
+ * edits take effect immediately. A missing file = the feature does not exist
+ * at all (null → all scenarios off, zero network, zero build). */
 export const loadJudgmentConfig = (path: string): JudgmentConfig | null => {
   if (!existsSync(path)) return null;
   try {
     return parseJudgmentConfig(JSON.parse(readFileSync(path, 'utf8')));
   } catch {
-    return null; // 坏配置 = 关，绝不带病出网
+    return null; // Broken config = off; never go out to the network in a bad state
   }
 };
 
-// ---- 提供方（三者同形，都是 Judge——约束②的替换接缝） -------------------------
+// ---- Providers (all three same-shaped Judges — the replacement seam of ②) ----
 
-/** local-api：任意实现 {state,model,questions} → {answers} 契约的 HTTP 端点
- * （本地部署 jev 时指过来即可，响应形状与云端一致）。 */
+/** local-api: any HTTP endpoint implementing the {state,model,questions} →
+ * {answers} contract (point it here when running jev locally; the response
+ * shape matches the cloud). */
 export const createLocalApiJudge = (opts: {
   readonly url: string;
   readonly model?: string;
@@ -105,8 +117,9 @@ export const createLocalApiJudge = (opts: {
   };
 };
 
-/** cli：子进程判定——JSON {state,questions} 走 stdin，{answers} 走 stdout。
- * 本地 CLI 部署（离线模型/脚本包装）零改码接入。 */
+/** cli: subprocess judgment — JSON {state,questions} via stdin, {answers}
+ * via stdout. Local CLI deployments (offline models / script wrappers) plug
+ * in with zero code changes. */
 export const createCliJudge = (opts: {
   readonly cmd: readonly string[];
   readonly timeoutMs?: number;
@@ -123,7 +136,7 @@ export const createCliJudge = (opts: {
       const result = await new Promise<JevResult>((resolveP, rejectP) => {
         const child = spawn(opts.cmd[0]!, opts.cmd.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
         let out = '';
-        let errOut = ''; // stderr 收进来：cli 判定失败时错误消息里留诊断线索
+        let errOut = ''; // Collect stderr: keeps a diagnostic trail in the error message when the cli judgment fails
         const timer = setTimeout(() => {
           child.kill();
           rejectP(new Error(`cli judge timeout (${opts.timeoutMs ?? 30_000}ms)`));
@@ -156,18 +169,22 @@ export const createCliJudge = (opts: {
   };
 };
 
-/** 按配置挑提供方。缺凭证/缺 url/缺 cmd → null（网关降级为全 off）。 */
+/** Pick the provider from config. Missing credential/url/cmd → null (the
+ * gateway degrades to all-off). */
 export const createJudgeFromConfig = (
   cfg: JudgmentConfig,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Judge | null => {
   const timeoutMs = cfg.timeout_ms ?? 15_000;
   if (cfg.provider === 'cloud') {
-    // token 来源优先级：cloud.token（配置直书，2026-09-28 用户裁定——引擎
-    // 进程与启动 shell 的 env 解耦，nohup/launchd/手工启动一律有 token）>
-    // 自定义 tokenEnv（精确匹配该名）> JEV_TOKEN→TYPESAFE_API_KEY 兜底链
-    // （兼容存量）。此前把 env 过滤成单键对象再喂兜底链，两个兜底键都查
-    // 不到——自定义名恒 ''（配置进得去、永远 null）。
+    // Token source priority: cloud.token (written directly in config, user
+    // ruling 2026-09-28 — decouples the engine process from the launching
+    // shell's env, so nohup/launchd/manual starts always have a token) >
+    // custom tokenEnv (exact match on that name) > the JEV_TOKEN →
+    // TYPESAFE_API_KEY fallback chain (legacy compatibility). Previously the
+    // env was filtered down to a single-key object before feeding the
+    // fallback chain, so neither fallback key could be found — a custom name
+    // was always '' (config got in, judge forever null).
     const token = (cfg.cloud?.token ?? '') !== ''
       ? cfg.cloud!.token!
       : (cfg.cloud?.tokenEnv !== undefined && cfg.cloud.tokenEnv !== ''
@@ -184,16 +201,17 @@ export const createJudgeFromConfig = (
   return createCliJudge({ cmd: cfg.cli.cmd, timeoutMs });
 };
 
-// ---- 网关 ---------------------------------------------------------------------
+// ---- Gateway ------------------------------------------------------------------
 
 export interface JudgmentGatewayDeps {
-  /** 热读配置（生产 = () => loadJudgmentConfig(path)）。 */
+  /** Hot-read config (production = () => loadJudgmentConfig(path)). */
   readonly load: () => JudgmentConfig | null;
-  /** Judge 构建（配置变化时重建；token 在此读 env）。 */
+  /** Judge construction (rebuilt on config change; token env is read here). */
   readonly judgeOf: (cfg: JudgmentConfig) => Judge | null;
-  /** 用量回执（生产 = usage.record 进 prompt_usage——判定成本与编排器/CC
-   * 同一本账；失败调用也记：tokens 为 0、error 留诊断）。off/提供方不可用
-   * 不出网，不产生回执。 */
+  /** Usage receipt (production = usage.record into prompt_usage — judgment
+   * costs share the same ledger as the orchestrator/CC; failed calls are
+   * recorded too: tokens 0, error left for diagnosis). off / provider
+   * unavailable means no network call, hence no receipt. */
   readonly onUsage?: (r: {
     readonly scenario: JudgmentScenario;
     readonly mode: 'shadow' | 'on';
@@ -210,9 +228,11 @@ export interface JudgmentGatewayDeps {
 
 export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGateway => {
   let cached: { readonly key: string; readonly judge: Judge | null } | null = null;
-  // 用量入账（生产=sqlite 写）绝不反噬判定：写失败降级为日志。否则成功判定
-  // 会被伪装成 ok:false（影子账本污染）、持续失败时 ask 直接 reject 穿透
-  // 消费方——击穿「网关不抛」纪律（2026-09-27 审查 P2-3）。
+  // Usage accounting (production = sqlite write) must never backfire on the
+  // judgment: a write failure degrades to a log line. Otherwise a successful
+  // judgment gets disguised as ok:false (shadow-ledger pollution), and
+  // persistent failures make ask reject straight through to the consumer —
+  // breaking the "gateway never throws" discipline (2026-09-27 review P2-3).
   const recordUsage = (r: Parameters<NonNullable<JudgmentGatewayDeps['onUsage']>>[0]): void => {
     try {
       deps.onUsage?.(r);
@@ -221,8 +241,10 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
     }
   };
   const judgeFor = (cfg: JudgmentConfig): Judge | null => {
-    // 缓存键含 timeout_ms：只调超时（如 15s→5s 应对 provider 变慢）也要重建，
-    // 否则旧超时一直用到其他字段变化——违背热读「改文件即时生效」承诺。
+    // The cache key includes timeout_ms: a timeout-only tweak (e.g. 15s→5s as
+    // a provider slows down) must also rebuild, otherwise the old timeout
+    // lives until some other field changes — violating the hot-read promise
+    // that file edits take effect immediately.
     const key = JSON.stringify({ p: cfg.provider, c: cfg.cloud ?? {}, l: cfg.local_api ?? {}, x: cfg.cli ?? {}, t: cfg.timeout_ms });
     if (cached === null || cached.key !== key) {
       cached = { key, judge: deps.judgeOf(cfg) };
@@ -239,8 +261,10 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
       const mode = cfg?.scenarios?.[scenario] ?? 'off';
       if (cfg === null || mode === 'off') return null;
       const judge = judgeFor(cfg);
-      // mode 与 threshold 同源这一次 load，随结果一并返回——消费方以 outcome
-      // 为准、不再各自重读配置，热改落在多次读之间的 TOCTOU 窗口就此收口。
+      // mode and threshold come from this single load and are returned with
+      // the result — consumers treat the outcome as authoritative and stop
+      // re-reading config themselves, closing the TOCTOU window where hot
+      // edits land between reads.
       const base = { mode, provider: `${cfg.provider}`, threshold: cfg.min_confidence ?? 0.7 } as const;
       if (judge === null) {
         return { ...base, ok: false, error: 'provider unavailable' };
@@ -255,17 +279,22 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
             cachedTokens: Number(r.usage.cached_tokens ?? r.usage.prompt_tokens_details?.cached_tokens ?? 0) || undefined,
           durationMs, ok: true,
         });
-        // 按问题键取答案（多问响应不静默错配到「第一个值」）。逐题做极性映射，
-        // 顶层 legacy 字段=第一个问题的答案（既有单问消费方零改动）。
+        // Answers are looked up by question key (multi-question responses are
+        // never silently mismatched onto "the first value"). Polarity mapping
+        // is per question; the legacy top-level fields = the first question's
+        // answer (existing single-question consumers need zero changes).
         const answerOf = (a: unknown): { answer?: string; confidence?: number; probabilities?: Readonly<Record<string, number>> } => {
           const first = a as
             | { choice?: string; confidence?: number; probabilities?: Readonly<Record<string, number>>; noul?: number }
             | undefined;
           if (typeof first?.noul === 'number') {
-            // noul 极性（plan.ts 钉死）= P(答案为是)。confidence 是**所选答案**
-            // 的概率：判 'false'（不值得起单）时取 1-noul——模型自信拒绝必须能过
-            // 消费方阈值，否则「answer==='false' && confidence>=0.7」是空集，
-            // on 模式一张单也拦不下（P1）。probabilities 补全两极供影子期评估。
+            // noul polarity (pinned in plan.ts) = P(answer is yes).
+            // confidence is the probability of **the chosen answer**: on a
+            // 'false' verdict (not worth opening a case) it is 1-noul — a
+            // confident model rejection must still clear the consumer
+            // threshold, otherwise "answer==='false' && confidence>=0.7" is
+            // the empty set and on mode never blocks a single case (P1).
+            // probabilities fills in both poles for shadow-period evaluation.
             return {
               answer: first.noul >= 0.5 ? 'true' : 'false',
               confidence: first.noul >= 0.5 ? first.noul : 1 - first.noul,
@@ -290,15 +319,19 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const durationMs = Date.now() - t0;
-        // 失败调用也入账（tokens 0）：成本账本同时是「判定试了多少次」的
-        // 运营面——静默失败在影子期会伪装成「零成本零运行」。
+        // Failed calls are accounted too (tokens 0): the cost ledger doubles
+        // as the operational view of "how many judgment attempts happened" —
+        // a silent failure would masquerade as "zero cost, zero runs" during
+        // the shadow period.
         recordUsage({
           scenario, mode, model: judge.model, inputTokens: 0, outputTokens: 0,
           durationMs, ok: false, error: msg.slice(0, 80),
         });
         deps.log?.(`[judgment] ${scenario} judgment failed (default behavior applies): ${msg}`);
-        // 错误串含远端可控的响应体片段，账本是审计面——落账只留前 80 字符，
-        // 完整诊断在上面这行日志。
+        // The error string contains remotely controllable response-body
+        // fragments and the ledger is an audit surface — only the first 80
+        // characters are recorded; the full diagnosis lives in the log line
+        // above.
         return { ...base, ok: false, error: msg.slice(0, 80) };
       }
     },
