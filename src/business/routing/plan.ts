@@ -1,71 +1,58 @@
-// Routing planner (CLI dry-run surface): hands a batch of feedback tickets to
-// Jev for two semantic judgments — ① classification (choice: which declared
-// agent session owns each ticket) ② merging (noul: whether a candidate pair
-// shares one root cause and should be handled as a single ticket). The current
-// chain (prefix rules / channel default, feedbackSessionFor as the single
-// source of truth) is projected alongside as the baseline, making divergence
-// visible — to gauge the error-rate gap between "jev judgment vs code
-// judgment". Hard boundary: this module computes but never dispatches — no
-// dispatch calls, no case creation, no ledger writes (dry-run is a structural
-// guarantee, not a switch). Design discipline: code owns the flow (candidate
-// pair pre-screening / passes / thresholds / grouping), the model only
-// supplies judgments; the Judge port is pluggable, tests use zero network.
+// 路由计划器（CLI dry-run 面）：把一批 feedback 单交给 Jev 做两个语义判断——
+// ①分类（choice：单子归哪个声明 agent 会话）②合并（noul：候选对是否同一
+// 根因，应并成一单处理）。现行链（前缀规则/渠道默认，feedbackSessionFor
+// 单一事实源）作为基线并排投影，分歧可见——评估「jev 判定 vs 代码判定」
+// 的失误率差。硬边界：本模块只算不派——无 dispatch 调用、不建单、不落账
+// （dry-run 是构造保证，不是开关）。设计纪律：代码拥有流程（候选对预筛/
+// 轮次/阈值/分组），模型只供判断；Judge 端口可插拔，测试零网络。
 
 import type { Judge, JevAnswer, JevQuestion } from './jev.ts';
 import { feedbackSessionFor, type FeedbackRouting } from '../intake/feedbackIntake.ts';
 import type { FbRecord } from '../intake/feedbackMirror.ts';
 
-// ---- Plan input ---------------------------------------------------------------
+// ---- 计划输入 -----------------------------------------------------------------
 
-/** Routing menu item for jev (projected from config.agents; the declaration
- * table remains the single structural source). */
+/** jev 的路由菜单项（config.agents 投影；声明表仍是唯一结构源）。 */
 export interface RouteAgent {
   readonly session: string;
   readonly company: string;
   readonly domain: string;
   readonly senders: readonly string[];
   readonly cwd: string;
-  /** One-line business description — a lever on judgment quality
-   * (company/domain alone are too thin). */
+  /** 一句话业务描述——判定质量的杠杆（company/domain 两词太瘦）。 */
   readonly description: string;
 }
 
-/** Planning facts: declarations + rules + fallback + (optional) mesh
- * busy/idle projection. */
+/** 计划事实：声明 + 规则 + 兜底 +（可选）mesh 忙闲投影。 */
 export interface RoutingFacts {
   readonly agents: readonly RouteAgent[];
   readonly rules: readonly { readonly prefix: string; readonly session: string }[];
   readonly defaultSession: string;
-  /** session → busy/idle & liveness (projected from GET /api/agents/graph;
-   * omitted when absent). */
+  /** session → 忙闲/活态（GET /api/agents/graph 投影；缺省不显示）。 */
   readonly live?: Readonly<Record<string, { readonly working: boolean; readonly live: boolean }>>;
 }
 
 export interface RoutedTicket {
   readonly record: FbRecord;
-  /** Target session; '' = undecided (needsHuman). */
+  /** 目标会话；'' = 未定（needsHuman）。 */
   readonly session: string;
   readonly via: 'jev' | 'rule' | 'default' | 'uncertain';
   readonly confidence: number;
   readonly probabilities: Readonly<Record<string, number>>;
-  /** Which pass resolved it; 0 = baseline-only. */
+  /** 第几轮定下来；0 = 基线-only。 */
   readonly pass: number;
-  /** How the current engine chain would route it (prefix rule hit or
-   * channel-default fallback). */
+  /** 现行引擎链会怎么走（前缀规则命中 or 渠道默认兜底）。 */
   readonly baseline: { readonly session: string; readonly source: 'rule' | 'default' };
-  /** Tickets suspected of sharing the same root cause (the other end of
-   * merge-judgment pairs scoring ≥ the threshold). */
+  /** 疑似同根因的伙伴单（合并判定得分≥阈值的对端）。 */
   readonly dupWith?: readonly { readonly id: string; readonly noul: number }[];
 }
 
 export interface PlanGroup {
   readonly session: string;
   readonly members: readonly RoutedTicket[];
-  /** Pairs within this group judged to share a root cause and suggested for
-   * single-ticket handling. */
+  /** 本组内被判定同根因、建议并单处理的对。 */
   readonly mergedPairs: readonly { readonly a: string; readonly b: string; readonly noul: number }[];
-  /** Lowest confidence in the group (after merging, the whole group follows
-   * the weakest vote). */
+  /** 组内最低置信（并单后整组按最弱一票走）。 */
   readonly confidence: number;
   readonly live?: { readonly working: boolean; readonly live: boolean };
 }
@@ -77,8 +64,7 @@ export interface RoutingPlan {
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   readonly groups: readonly PlanGroup[];
   readonly needsHuman: readonly RoutedTicket[];
-  /** Same root cause but routed differently by judgment (or one side
-   * undecided) — not merged, surfaced explicitly. */
+  /** 同根因但判定路由不同（或一方未定）——不合并，显性上浮。 */
   readonly crossRouteDups: readonly {
     readonly a: string; readonly b: string; readonly noul: number;
     readonly sessions: readonly [string, string];
@@ -94,37 +80,33 @@ export interface RoutingPlan {
 }
 
 export interface PlanOptions {
-  /** null = baseline-only (current-rule projection, no semantic judgment). */
+  /** null = 基线-only（现行规则投影，不判语义）。 */
   readonly judge: Judge | null;
-  /** Confidence floor for choice (below → next pass). Default 0.5. */
+  /** choice 置信下限（低于 → 进下一轮）。默认 0.5。 */
   readonly confidenceFloor?: number;
-  /** noul merge threshold. Default 0.6. */
+  /** noul 合并阈值。默认 0.6。 */
   readonly mergeFloor?: number;
-  /** Max convergence passes (exceeded → explicit needsHuman, no blind
-   * fallback). Default 2. */
+  /** 收敛轮数上限（超出 → 显性 needsHuman，不瞎兜底）。默认 2。 */
   readonly maxPasses?: number;
-  /** Per-ticket body truncation length in state (pass 2 doubles it).
-   * Default 500. */
+  /** state 里单条 body 截断长度（第 2 轮 ×2 加料）。默认 500。 */
   readonly bodyLimit?: number;
-  /** Cap on merge candidate pairs (guards against O(n²) blowup). Default 40. */
+  /** 合并候选对上限（防 O(n²) 膨胀）。默认 40。 */
   readonly maxDupPairs?: number;
 }
 
-// ---- Pure functions -----------------------------------------------------------
+// ---- 纯函数 -------------------------------------------------------------------
 
 export const ticketTitle = (r: FbRecord): string =>
   `${r.page_title || r.page || '(unmounted)'}${r.element_label !== '' ? ` · ${r.element_label}` : ''}`;
 
-/** Current baseline: identical to engine intake (feedbackSessionFor as the
- * single source of truth, no logic copied). */
+/** 现行基线：与引擎 intake 完全同式（feedbackSessionFor 单一事实源，不复制逻辑）。 */
 const baselineOf = (r: FbRecord, facts: RoutingFacts): RoutedTicket['baseline'] => {
   const routing: FeedbackRouting = { rules: facts.rules };
   const hit = feedbackSessionFor(r, routing);
   return hit !== '' ? { session: hit, source: 'rule' } : { session: facts.defaultSession, source: 'default' };
 };
 
-/** Merge candidate pair pre-screen (code owns the candidate set, O(n²) stays
- * out of the API): same page / same author / same thread chain. */
+/** 合并候选对预筛（代码拥有候选集，O(n²) 不进 API）：同页/同人/同线程链。 */
 export const dupCandidates = (
   records: readonly FbRecord[],
   cap: number,
@@ -144,8 +126,7 @@ export const dupCandidates = (
   return out;
 };
 
-/** Option menu for choice: all declared agents + uncertain (the model must
- * not be forced into a blind pick). */
+/** choice 的选项菜单：声明 agents 全量 + uncertain（模型不许被逼着瞎选）。 */
 const agentMenu = (facts: RoutingFacts): Record<string, string> => {
   const criteria: Record<string, string> = {};
   for (const a of facts.agents) {
@@ -160,7 +141,7 @@ const agentMenu = (facts: RoutingFacts): Record<string, string> => {
   return criteria;
 };
 
-/** Top N candidates from probabilities (for needsHuman display). */
+/** probabilities 前 N 候选（needsHuman 展示用）。 */
 export const topAlternatives = (
   p: Readonly<Record<string, number>>, n = 2,
 ): readonly { readonly option: string; readonly p: number }[] =>
@@ -170,7 +151,7 @@ export const topAlternatives = (
     .sort((x, y) => y.p - x.p)
     .slice(0, n);
 
-// ---- Planner ------------------------------------------------------------------
+// ---- 计划器 -------------------------------------------------------------------
 
 export const planRouting = async (
   records: readonly FbRecord[],
@@ -205,14 +186,13 @@ export const planRouting = async (
     const pairs = dupCandidates(records, maxDupPairs);
     for (let pass = 1; pass <= maxPasses && pending.length > 0; pass++) {
       passes = pass;
-      const limit = bodyLimit * pass; // pass 2 feeds more context: longer source text
+      const limit = bodyLimit * pass; // 第 2 轮加料：更长原文
       const state = {
         agents: facts.agents.map((a) => ({
           session: a.session, company: a.company, domain: a.domain,
           senders: a.senders, cwd: a.cwd, description: a.description,
         })),
-        // Declarative context: page ownership rules (evidence, not verdicts —
-        // semantics may transcend string matching).
+        // 声明性上下文：页面归属规则（证据非答案——语义可超越字符串匹配）。
         page_rules: facts.rules,
         tickets: pending.map((r) => ({
           id: r.id, page: r.page, page_title: r.page_title, element_label: r.element_label,
@@ -276,8 +256,7 @@ export const planRouting = async (
     }
   }
 
-  // Undecided tickets (convergence passes exhausted): explicit needsHuman,
-  // never a silent fallback — carrying the last pass's candidate order.
+  // 未定单（收敛轮数耗尽）：显性 needsHuman，绝不静默兜底——带最后一轮候选序。
   const needsHuman: RoutedTicket[] = [];
   for (const r of records) {
     if (routed.has(r.id)) continue;
@@ -290,8 +269,7 @@ export const planRouting = async (
     });
   }
 
-  // Merge into groups: same-root-cause pairs → union-find; cross-route
-  // same-root-cause → surfaced as conflicts, not merged.
+  // 合并成组：同根因对 → 并查集；跨路由同根因 → 冲突上浮不合并。
   const parent = new Map<string, string>();
   const find = (x: string): string => {
     const p = parent.get(x) ?? x;
@@ -337,8 +315,7 @@ export const planRouting = async (
     return out;
   };
 
-  // Groups: resolved tickets clustered by session (input order preserved);
-  // merged pairs recorded in their group; group confidence = member minimum.
+  // 组：已定单按会话聚（保持输入序）；合并对记进所属组；组置信=成员最低。
   const groupOrder: string[] = [];
   const bySession = new Map<string, RoutedTicket[]>();
   for (const r of records) {
@@ -384,11 +361,9 @@ export const planRouting = async (
   };
 };
 
-// ---- Sample fixtures (--sample: offline and deterministic, touches no
-// engine/network) ---------------------------------------------------------------
+// ---- 样例夹具（--sample：离线确定性，不碰引擎/网络） ---------------------------
 
-/** Shape taken from a snapshot of the live declarations (0922): the menu has
- * confusable siblings. */
+/** 形状取自 live 声明的快照（0922）：the menu has confusable siblings。 */
 export const SAMPLE_FACTS: RoutingFacts = {
   agents: [
     { session: 'reply', company: 'acme', domain: 'reply', senders: [], cwd: '', description: 'General replies session: customer email replies and unowned tickets (channel fallback)' },
@@ -410,8 +385,7 @@ const smpl = (id: string, over: Partial<FbRecord>): FbRecord => ({
   reply_to: '', element_label: '', ...over,
 });
 
-/** Six samples: one root cause worded two ways (should merge) / a 502
- * incident / stale content / an unmounted suggestion / a follow-up reply. */
+/** 6 条样例：同根因两种说法（应合并）/ 502 事故 / 内容过期 / 无挂载诉求 / 回挂追单。 */
 export const SAMPLE_RECORDS: readonly FbRecord[] = [
   smpl('smpl01', {
     page: '/site-a', page_title: 'Homepage', element_label: 'Hero title',

@@ -1,71 +1,56 @@
-// Task routing (user ruling 2026-09-30 "everything goes through routing"):
-// resolved-target judgment for keyless case creation — the chat plan stash
-// and the HTTP /api/lifecycle/tasks fallback share this one entry point.
-// Layered adjudication (settled in the 0930 conversation): routing decisions
-// live only in the routing layer (this function); the input layer only relays
-// a user pin or calls this function, never picks a session itself.
-// Priority: explicit pin (handled by the caller, bypasses this function — a
-// pinned target never diverts, it would rather queue) > jev content judgment
-// > busy/idle diversion (same-company idle preferred) > default fallback.
-// Busy = a non-terminal case exists under the session's name (including
-// queued / stopped at a gate awaiting approval — the redefined 0930
-// busy/idle semantics).
+// 任务路由（2026-09-30 用户裁定「所有的都走路由」）：无键起单的落点判定
+// ——chat 计划暂存与 HTTP /api/lifecycle/tasks 兜底共用一个入口。分层裁定
+// （0930 对话定案）：路由决定只住在 routing 层（本函数），input 层只转述
+// 用户钉住或调用本函数，绝不自选会话。
+// 优先级：显式钉住（调用方处理，不经本函数——钉住不改道宁可排队）>
+// jev 内容判定 > 忙闲改道（同公司空闲优先）> default 兜底。
+// 忙 = 名下存在非终态单（含排队/停在闸门等批准，0930 忙闲重定义）。
 
 import type { AgentDecl, Routing } from './decision.ts';
 import type { JudgmentGateway } from '../../contracts/ports.ts';
 
 export interface TaskLanding {
   readonly session: string;
-  /** Human-readable note (shown on the plan card / in logs, e.g. "juli-reply
-   * busy → diverted to juli-dev"). */
+  /** 人话注记（计划卡/日志显示，如「juli-reply 忙 → 改道 juli-dev」）。 */
   readonly note: string;
-  /** Judgment source: jev content judgment or default fallback. */
+  /** 判定来源：jev 内容判定 or default 兜底。 */
   readonly via: 'jev' | 'default';
-  /** Ideal target from jev/default (the value before busy/idle diversion;
-   * ≠ session when diverted). */
+  /** jev/default 给出的理想落点（忙闲改道前的值；diverted 时 ≠ session）。 */
   readonly ideal: string;
-  /** A busy/idle diversion occurred. */
+  /** 忙闲改道发生过。 */
   readonly diverted: boolean;
 }
 
 export interface RouteTaskDeps {
   readonly routing: Routing;
   readonly judgment?: JudgmentGateway;
-  /** Busy/idle predicate (production = store.sessionHasOpenWork). */
+  /** 忙闲谓词（生产 = store.sessionHasOpenWork）。 */
   readonly busySession: (session: string) => boolean;
-  /** Sessions actually present in tmux (diversion candidates must really
-   * exist, same discipline as the dispatch surface; unchecked when omitted). */
+  /** tmux 真实存在的会话（改道候选须真身存在，与派发面同纪律；缺省不校验）。 */
   readonly availableSessions?: readonly string[];
 }
 
-/** Candidate menu: declared sessions that are neither bound nor high-tier
- * twins. Bound sessions only accept allowlisted addresses (the session_bound
- * guard refuses dispatch — putting them on the menu creates dead tickets);
- * the high tier is a cost-diversion target, never a content-routing target
- * ("no high intelligence unless necessary"). The chat pinnable list shares
- * this source (reused at runtime). */
+/** 候选菜单：非绑定 + 非 high 孪生的声明会话。绑定会话只认白名单地址
+ * （session_bound 守卫拒派，进菜单=造死单）；high 档是成本改道落点，不做
+ * 内容路由目标（「非必要不高智能」）。chat 的可钉名单同源（runtime 复用）。 */
 export const routeTaskMenu = (routing: Routing): readonly AgentDecl[] => {
   const bound = new Set((routing.boundAgents ?? []).map((b) => b.session));
   return (routing.agents ?? []).filter((a) =>
     a.session.trim() !== '' && !bound.has(a.session) && a.model_tier !== 'high');
 };
 
-/** Resolved-target judgment for keyless case creation (fail-open: judgment
- * down/off/low-confidence = existing default behavior). */
+/** 无键起单落点判定（fail-open：判定挂/off/低置信=既有 default 行为）。 */
 export const routeTask = async (title: string, brief: string, deps: RouteTaskDeps): Promise<TaskLanding> => {
   const def = deps.routing.defaultSession;
   const menu = routeTaskMenu(deps.routing);
   if (menu.length === 0) {
     return { session: def, note: 'no candidate declared session, default routing', via: 'default', ideal: def, diverted: false };
   }
-  // jev content judgment (same scenario as route_intake, shared with the
-  // email line): on + above threshold + answer inside the menu + **tmux
-  // liveness** (run-11 P2-3: adopting a hit on an offline declared session
-  // pins the target into an offline session, the dispatch surface's
-  // resolveSession silently falls back to default and the pin follows — the
-  // plan card's promise goes false. Offline is treated as fail-open: land on
-  // default, still divertible when busy); shadow/off/failure = zero behavior
-  // change.
+  // jev 内容判定（route_intake 同场景，邮件线共用）：on + 过阈值 + 答案在
+  // 菜单内 + **tmux 活性**（十一跑 P2-3：判中离线声明会话就采纳=把落点钉进
+  // 离线会话，派发面 resolveSession 静默兜回 default 且钉住跟着走——计划卡
+  // 承诺失真。离线视同 fail-open：落 default，忙时照旧可改道）；shadow/off/
+  // 失败零行为变化。
   let ideal = def;
   let via: 'jev' | 'default' = 'default';
   let offlineHit = '';
@@ -86,17 +71,13 @@ export const routeTask = async (title: string, brief: string, deps: RouteTaskDep
       ideal = outcome.answer!;
       via = 'jev';
     } else if (menuHit) {
-      // Liveness check failed (unchecked when availableSessions is omitted =
-      // old behavior): the judgment hit an offline session — not adopted, and
-      // the note records it honestly (the plan card can show why it landed
-      // on default).
+      // 活性校验不过（availableSessions 缺省时不校验=旧行为）：判中了但会话
+      // 离线——不采纳，note 如实留痕（计划卡看得见为什么落 default）。
       offlineHit = outcome.answer!;
     }
   }
-  // Busy/idle awareness (0930): ideal target busy → an idle declared session
-  // (same company first, cross-company next); all busy → queue on the ideal
-  // session. Candidates must really exist in tmux (same source as the
-  // dispatch surface's idleOf).
+  // 忙闲感知（0930）：理想落点忙 → 空闲声明会话（同公司优先，其次跨公司）；
+  // 全忙 → 落理想会话排队。候选真身须存在于 tmux（与派发面 idleOf 同源）。
   if (ideal !== '' && deps.busySession(ideal)) {
     const home = menu.find((a) => a.session === ideal)?.company ?? '';
     const idle = [...menu.filter((a) => a.company === home), ...menu.filter((a) => a.company !== home)]

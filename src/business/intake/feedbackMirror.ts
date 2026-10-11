@@ -14,16 +14,12 @@ export interface FbRecord {
   author_role: string;
   reply_to: string;
   element_label: string;
-  /** Source identifier (multi-source era 0927; always present when read from
-   * the db, remote may omit it). */
+  /** 来源标识（多源时代 0927；db 读出恒有，remote may omit it）。 */
   source?: string;
-  /** Creator kind (default = legacy external record, treated as human and
-   * intaked as before — fail-open backward compatibility). */
+  /** 创建者类型（缺省 = legacy 外部记录，视同 human 照旧进件，fail-open 向后兼容）。 */
   origin_kind?: FbOriginKind;
-  /** Concrete creator identity (audit surface: 'cyber' / 'juli-dev' /
-   * 'mirror-sync'). */
+  /** 具体创建者身份（审计面：'cyber' / 'juli-dev' / 'mirror-sync'）。 */
   origin_actor?: string;
-  /** Back-link (workflow id / parent record — closes the accountability
-   * chain). */
+  /** 回链（workflow id / 父记录——追责链闭环）。 */
   origin_ref?: string;
 }
