@@ -181,6 +181,7 @@ export type JudgmentScenario =
   | 'redline_semantic'// 红线语义体检（预留）
   | 'triage_classify' // 邮件 triage：category/needs_reply 类型化判定（summary 留 LLM）
   | 'mount_infer'     // feedback 挂载推断（预留）
+  | 'task_tier'       // 任务难度档位判定：title+brief 配不配高智能档（false=standard 更省）
   | 'alert_grade';    // 告警分级降噪（预留）
 
 /** 场景全集的运行时镜像（judgment.json 是人工热读面——拼错的场景键必须能被
@@ -188,7 +189,7 @@ export type JudgmentScenario =
  * 与联合类型的同构，两边漂移时此处编译报错）。 */
 export const JUDGMENT_SCENARIOS: readonly JudgmentScenario[] = [
   'route_intake', 'route_fallback', 'intake_gate', 'align_needed', 'aggregate_same', 'handoff_domain',
-  'output_quality', 'redline_semantic', 'triage_classify', 'mount_infer', 'alert_grade',
+  'output_quality', 'redline_semantic', 'triage_classify', 'mount_infer', 'task_tier', 'alert_grade',
 ];
 
 /** 判定问题（结构最小形状——contracts 不依赖 business/routing 的 JevQuestion，
