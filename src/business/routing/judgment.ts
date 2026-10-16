@@ -24,11 +24,26 @@ export interface JudgmentConfig {
 
 const MODES: readonly string[] = ['off', 'shadow', 'on'];
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
+
 export const parseJudgmentConfig = (raw: unknown): JudgmentConfig | null => {
   if (raw === null || typeof raw !== 'object') return null;
   const d = raw as Record<string, unknown>;
   const provider = d['provider'];
   if (provider !== 'cloud' && provider !== 'local-api' && provider !== 'cli') return null;
+  // 子对象形状校验（judgment.json 是人工热读面）：此前 cloud/local_api/cli 直接
+  // as 信任——cli.cmd 传字符串能穿过 createJudgeFromConfig 的 `cmd.length === 0`
+  // 检查（字符串也有 length），随后 cmd.slice(1) 会把字符串按字符拆参 spawn。
+  // 坏形状一律 null（坏配置=关，绝不带病出网）；缺字段保持既有降级语义
+  // （缺 cmd → 提供方不可用 → 全场景 off，见 createJudgeFromConfig）。
+  if (d['cloud'] !== undefined && !isPlainObject(d['cloud'])) return null;
+  if (d['local_api'] !== undefined && !isPlainObject(d['local_api'])) return null;
+  if (d['cli'] !== undefined) {
+    if (!isPlainObject(d['cli'])) return null;
+    const cmd = (d['cli'] as Record<string, unknown>)['cmd'];
+    if (cmd !== undefined && (!Array.isArray(cmd) || !cmd.every((c) => typeof c === 'string'))) return null;
+  }
   const scenarios: Record<string, 'off' | 'shadow' | 'on'> = {};
   const rawScenarios = d['scenarios'];
   if (rawScenarios !== null && typeof rawScenarios === 'object') {

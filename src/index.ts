@@ -1,7 +1,7 @@
 // L4 routing layer facade — the only public surface of this layer.
 // Complete export surface of the five source modules + the peeled intake seam.
-// Dependency rule: routing may depend on shared/contracts and the artifacts
-// package (types); consumers must never bypass this facade.
+// Dependency rule: routing may depend on shared/contracts only (zero npm
+// dependencies); consumers must never bypass this facade.
 export {
   decideRoute, isInternalSender,
   type BoundAgent, type Routing, type AgentDecl, type RouteDecision,
