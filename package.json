@@ -1,6 +1,6 @@
 {
   "name": "@juli-os/routing",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "juli-os L4 layer: multi-agent dispatch decisions — declarative agent routing, busy-diversion, sender-domain claims, and a pluggable judgment gateway. Pure functions over injected facts.",
   "type": "module",
   "main": "./dist/index.js",
