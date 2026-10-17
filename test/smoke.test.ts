@@ -23,6 +23,20 @@ test('decideRoute: domain claim routes; unknown sender falls to default', () => 
   assert.equal(fallback.session, 's-general');
 });
 
+test('decideRoute: trailing-space sender still hits the domain claim', () => {
+  const routing = {
+    defaultSession: 's-general', defaultProject: 'p',
+    agents: [
+      { session: 's-client', company: 'Client', domain: 'biz',
+        senders: ['anyone@client.example'] },
+      { session: 's-general', company: '', domain: 'general' },
+    ],
+    boundAgents: [],
+  };
+  const hit = decideRoute('contact@client.example ', routing as never);
+  assert.equal(hit.session, 's-client');
+});
+
 test('routeTaskMenu: bound sessions excluded from the dispatch menu', () => {
   const routing = {
     defaultSession: 's-a', defaultProject: 'p',

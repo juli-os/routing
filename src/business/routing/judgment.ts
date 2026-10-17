@@ -146,6 +146,9 @@ export const createCliJudge = (opts: {
         child.stdout.on('data', (c: Buffer) => { out += String(c); });
         child.stderr.on('data', (c: Buffer) => { errOut += String(c); });
         child.on('error', (e: Error) => { clearTimeout(timer); rejectP(e); });
+        // stdin 腿：子进程早退后 write/end 触发 EPIPE——不挂监听就是未捕获
+        // 异常（进程级），挂了才归位为 reject → 错误结果降级。
+        child.stdin.on('error', (e: Error) => { clearTimeout(timer); rejectP(e); });
         child.on('close', (code: number | null) => {
           clearTimeout(timer);
           const diag = errOut.trim() !== '' ? `: ${errOut.slice(0, 200)}` : '';
@@ -247,16 +250,35 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
   };
   return {
     threshold() {
-      return deps.load()?.min_confidence ?? 0.7;
+      try {
+        return deps.load()?.min_confidence ?? 0.7;
+      } catch {
+        return 0.7; // 网关不抛：load 缝抛错按缺省阈值降级
+      }
     },
     async ask(scenario, state, questions) {
-      const cfg = deps.load();
+      // 网关不抛纪律同样覆盖 load 缝：配置读取抛错=无判定可用（null=消费方走默认）。
+      let cfg: ReturnType<typeof deps.load>;
+      try {
+        cfg = deps.load();
+      } catch {
+        return null;
+      }
       const mode = cfg?.scenarios?.[scenario] ?? 'off';
       if (cfg === null || mode === 'off') return null;
-      const judge = judgeFor(cfg);
       // mode 与 threshold 同源这一次 load，随结果一并返回——消费方以 outcome
       // 为准、不再各自重读配置，热改落在多次读之间的 TOCTOU 窗口就此收口。
       const base = { mode, provider: `${cfg.provider}`, threshold: cfg.min_confidence ?? 0.7 } as const;
+      // 网关不抛纪律覆盖构建/留痕腿：judgeFor（含 judgeOf 与其内部 log）抛错
+      // 与判定失败同罪——降级 error 结果，消费方按默认行为走。
+      let judge: Judge | null;
+      try {
+        judge = judgeFor(cfg);
+      } catch (e) {
+        // error 字段保持稳定值（下游可匹配），细节只进日志。
+        try { deps.log?.(`[judgment] gateway init failed: ${e instanceof Error ? e.message : String(e)}`); } catch { /* log 抛错不得反向破坏网关不抛 */ }
+        return { ...base, ok: false, error: 'gateway init failed' };
+      }
       if (judge === null) {
         return { ...base, ok: false, error: 'provider unavailable' };
       }
@@ -264,10 +286,13 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
       try {
         const r = await judge.ask(state, questions);
         const durationMs = Date.now() - t0;
+        // cached_tokens 只算一次：用量回执与 outcome 各取同源值（契约字段
+        // 消费方可透传进留痕事件）。0/NaN → undefined（缺省=未上报）。
+        const cachedTokens = Number(r.usage.cached_tokens ?? r.usage.prompt_tokens_details?.cached_tokens ?? 0) || undefined;
         recordUsage({
           scenario, mode, model: r.model,
           inputTokens: r.usage.input_tokens, outputTokens: r.usage.output_tokens,
-            cachedTokens: Number(r.usage.cached_tokens ?? r.usage.prompt_tokens_details?.cached_tokens ?? 0) || undefined,
+          cachedTokens,
           durationMs, ok: true,
         });
         // 按问题键取答案（多问响应不静默错配到「第一个值」）。逐题做极性映射，
@@ -300,7 +325,7 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
           ...base, ok: true,
           answer: first.answer, confidence: first.confidence, probabilities: first.probabilities,
           answers, model: r.model, inputTokens: r.usage.input_tokens,
-          outputTokens: r.usage.output_tokens, durationMs,
+          outputTokens: r.usage.output_tokens, cachedTokens, durationMs,
         };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -311,7 +336,9 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
           scenario, mode, model: judge.model, inputTokens: 0, outputTokens: 0,
           durationMs, ok: false, error: msg.slice(0, 80),
         });
-        deps.log?.(`[judgment] ${scenario} judgment failed (default behavior applies): ${msg}`);
+        try {
+          deps.log?.(`[judgment] ${scenario} judgment failed (default behavior applies): ${msg}`);
+        } catch { /* 留痕腿失败不反噬 error 结果 */ }
         // 错误串含远端可控的响应体片段，账本是审计面——落账只留前 80 字符，
         // 完整诊断在上面这行日志。
         return { ...base, ok: false, error: msg.slice(0, 80) };

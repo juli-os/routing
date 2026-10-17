@@ -87,7 +87,7 @@ export const decideRoute = (from: string, routing: Routing): RouteDecision => {
   // 改道——认领该发件域的非绑定声明会话即落点。绑定会话跳过（它们只认
   // 白名单地址，域腿把同域其他发件人送进去会被 session_bound 守卫拒派）。
   // jev 内容判定（intake.ts）在本腿之上：置信够=内容赢粗域。未命中落默认。
-  const dom = from.split('@')[1]?.toLowerCase() ?? '';
+  const dom = from.trim().split('@')[1]?.toLowerCase() ?? '';
   const boundNames = new Set((routing.boundAgents ?? []).map((b) => b.session));
   const hit = dom === '' ? undefined : decls.find((d) =>
     !boundNames.has(d.session)
@@ -116,9 +116,10 @@ export const decideRoute = (from: string, routing: Routing): RouteDecision => {
   };
 };
 
-/** 内部发件人判定（第三期 Party 线）：复用现有声明表与 decideRoute 同一套域
- * 匹配规则——发件域命中 config.agents 声明 senders 的域，或精确命中
- * bound_agents 地址 → 内部。内部地址不查 CRM、不进客户投影。 */
+/** 内部发件人判定（第三期 Party 线）：发件域命中 internalDomains（自家域，
+ * 见 Routing.internalDomains 契约），或精确命中 bound_agents 白名单地址 →
+ * 内部。内部地址不查 CRM、不进客户投影。agents.senders 是客户发件域声明
+ * （路由匹配用），绝不算内部（2026-09-22 事故）。 */
 export const isInternalSender = (from: string, routing: Routing): boolean => {
   const email = from.trim().toLowerCase();
   const dom = email.split('@')[1] ?? '';
