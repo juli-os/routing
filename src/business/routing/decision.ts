@@ -16,7 +16,7 @@ export interface Routing {
   readonly defaultProject: string;
   /** 内部域（自家域，e.g. acme.example）：内部判定=绑定白名单精确地址 ∪ 本域。
    * agents.senders 是客户发件域声明（路由匹配用），绝不算内部——曾把主客户
-   * a customer contact was once swallowed into the internal bucket (live incident 2026-09-22)。 */
+   * 联系人吞进内部桶（2026-09-22 线上事故）。 */
   readonly internalDomains?: readonly string[];
   /** 可选：绑定会话表（生产来自 config.email.bound_agents）。 */
   readonly boundAgents?: readonly BoundAgent[];
@@ -65,8 +65,8 @@ export const decideRoute = (from: string, routing: Routing): RouteDecision => {
     b.senders.some((s) => s.trim().toLowerCase() === from.trim().toLowerCase()));
   if (bound !== undefined) {
     const d = declBy(bound.session);
-    const company = d?.company || '';
-    const domain = d?.domain || '';
+    const company = d?.company ?? '';
+    const domain = d?.domain ?? '';
     return {
       from,
       company,
@@ -95,7 +95,7 @@ export const decideRoute = (from: string, routing: Routing): RouteDecision => {
   const company = hit?.company ?? '';
   const session = hit?.session ?? routing.defaultSession;
   const dd = declBy(session);
-  const defDomain = dd?.domain || '';
+  const defDomain = dd?.domain ?? '';
   return {
     from,
     company,

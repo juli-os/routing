@@ -169,7 +169,6 @@ export const planRouting = async (
   let passes = 0;
   let usage = { inputTokens: 0, outputTokens: 0 };
   let dupScores: readonly { readonly a: FbRecord; readonly b: FbRecord; readonly noul: number }[] = [];
-  const routing: FeedbackRouting = { rules: facts.rules };
 
   const noJudge = opts.judge === null || records.length === 0 || facts.agents.length === 0;
   if (noJudge) {
@@ -238,12 +237,14 @@ export const planRouting = async (
       };
       for (const r of [...pending]) {
         const ans = res.answers[`route_${r.id}`];
-        if (ans !== undefined && ans.type === 'choice') lastAttempt.set(r.id, ans);
-        if (ans !== undefined && ans.type === 'choice' && ans.choice !== 'uncertain' && ans.confidence >= floor) {
-          routed.set(r.id, {
-            record: r, session: ans.choice, via: 'jev', confidence: ans.confidence,
-            probabilities: ans.probabilities, pass, baseline: baselineOf(r, facts),
-          });
+        if (ans !== undefined && ans.type === 'choice') {
+          lastAttempt.set(r.id, ans);
+          if (ans.choice !== 'uncertain' && ans.confidence >= floor) {
+            routed.set(r.id, {
+              record: r, session: ans.choice, via: 'jev', confidence: ans.confidence,
+              probabilities: ans.probabilities, pass, baseline: baselineOf(r, facts),
+            });
+          }
         }
       }
       pending = pending.filter((r) => !routed.has(r.id));

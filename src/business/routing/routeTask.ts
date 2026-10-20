@@ -67,13 +67,16 @@ export const routeTask = async (title: string, brief: string, deps: RouteTaskDep
     const menuHit = outcome !== null && outcome.ok && outcome.mode === 'on' && outcome.answer !== undefined
       && menu.some((d) => d.session === outcome.answer)
       && (outcome.confidence ?? 0) >= outcome.threshold;
-    if (menuHit && (deps.availableSessions === undefined || deps.availableSessions.includes(outcome.answer!))) {
-      ideal = outcome.answer!;
+    // menuHit 成立 ⇒ outcome 非空且 answer 已定义（上方合取项）——先收窄一次，
+    // 下面三处不再用非空断言。
+    const answer = menuHit ? outcome?.answer : undefined;
+    if (answer !== undefined && (deps.availableSessions === undefined || deps.availableSessions.includes(answer))) {
+      ideal = answer;
       via = 'jev';
-    } else if (menuHit) {
+    } else if (answer !== undefined) {
       // 活性校验不过（availableSessions 缺省时不校验=旧行为）：判中了但会话
       // 离线——不采纳，note 如实留痕（计划卡看得见为什么落 default）。
-      offlineHit = outcome.answer!;
+      offlineHit = answer;
     }
   }
   // 忙闲感知（0930）：理想落点忙 → 空闲声明会话（同公司优先，其次跨公司）；

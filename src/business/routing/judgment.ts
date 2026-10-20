@@ -7,7 +7,7 @@
 // 纪律继承：配置文件缺省 = 全场景 off + 零网络（jev 不进不请自来的路径）。
 
 import { existsSync, readFileSync } from 'node:fs';
-import { JUDGMENT_SCENARIOS, type JudgmentGateway, type JudgmentOutcome, type JudgmentScenario } from '../../contracts/ports.ts';
+import { JUDGMENT_SCENARIOS, type JudgmentGateway, type JudgmentScenario } from '../../contracts/ports.ts';
 import { createJev, jevTokenFromEnv, type JevAnswer, type JevResult, type Judge } from './jev.ts';
 
 // ---- 配置（~/.juli-service/judgment.json，每次判定重读=热生效） ----------------
@@ -24,12 +24,16 @@ export interface JudgmentConfig {
 
 const MODES: readonly string[] = ['off', 'shadow', 'on'];
 
+/** min_confidence 缺省：threshold() 与 ask() 结果里的 threshold 同源此值——
+ * 两处各写 0.7 字面量一旦漂移，消费方分读的阈值与 outcome.threshold 互相矛盾。 */
+const DEFAULT_MIN_CONFIDENCE = 0.7;
+
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 
 export const parseJudgmentConfig = (raw: unknown): JudgmentConfig | null => {
-  if (raw === null || typeof raw !== 'object') return null;
-  const d = raw as Record<string, unknown>;
+  if (!isPlainObject(raw)) return null;
+  const d = raw;
   const provider = d['provider'];
   if (provider !== 'cloud' && provider !== 'local-api' && provider !== 'cli') return null;
   // 子对象形状校验（judgment.json 是人工热读面）：此前 cloud/local_api/cli 直接
@@ -41,7 +45,7 @@ export const parseJudgmentConfig = (raw: unknown): JudgmentConfig | null => {
   if (d['local_api'] !== undefined && !isPlainObject(d['local_api'])) return null;
   if (d['cli'] !== undefined) {
     if (!isPlainObject(d['cli'])) return null;
-    const cmd = (d['cli'] as Record<string, unknown>)['cmd'];
+    const cmd = d['cli']['cmd'];
     if (cmd !== undefined && (!Array.isArray(cmd) || !cmd.every((c) => typeof c === 'string'))) return null;
   }
   const scenarios: Record<string, 'off' | 'shadow' | 'on'> = {};
@@ -95,13 +99,14 @@ export const createLocalApiJudge = (opts: {
   readonly fetchImpl?: typeof fetch;
 }): Judge => {
   const doFetch = opts.fetchImpl ?? fetch;
+  const model = opts.model ?? 'jev-local';
   return {
-    model: opts.model ?? 'jev-local',
+    model,
     async ask(state, questions) {
       const res = await doFetch(opts.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state, model: opts.model ?? 'jev-local', questions }),
+        body: JSON.stringify({ state, model, questions }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
       });
       const text = await res.text();
@@ -111,7 +116,7 @@ export const createLocalApiJudge = (opts: {
         throw new Error(`local-api response missing answers: ${text.slice(0, 200)}`);
       }
       const result: JevResult = {
-        model: d.model ?? opts.model ?? 'jev-local',
+        model: d.model ?? model,
         answers: d.answers,
         usage: { input_tokens: 0, output_tokens: 0, cached_tokens: 0 },
       };
@@ -131,18 +136,20 @@ export const createCliJudge = (opts: {
     const { spawn } = await import('node:child_process');
     return spawn;
   })();
+  const model = `cli:${opts.cmd[0] ?? ''}`;
   return {
-    model: `cli:${opts.cmd[0] ?? ''}`,
+    model,
     async ask(state, questions) {
       const spawn = await spawnImpl;
+      const timeoutMs = opts.timeoutMs ?? 30_000;
       const result = await new Promise<JevResult>((resolveP, rejectP) => {
         const child = spawn(opts.cmd[0]!, opts.cmd.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
         let out = '';
         let errOut = ''; // stderr 收进来：cli 判定失败时错误消息里留诊断线索
         const timer = setTimeout(() => {
           child.kill();
-          rejectP(new Error(`cli judge timeout (${opts.timeoutMs ?? 30_000}ms)`));
-        }, opts.timeoutMs ?? 30_000);
+          rejectP(new Error(`cli judge timeout (${timeoutMs}ms)`));
+        }, timeoutMs);
         child.stdout.on('data', (c: Buffer) => { out += String(c); });
         child.stderr.on('data', (c: Buffer) => { errOut += String(c); });
         child.on('error', (e: Error) => { clearTimeout(timer); rejectP(e); });
@@ -160,7 +167,7 @@ export const createCliJudge = (opts: {
               return;
             }
             resolveP({
-              model: d.model ?? `cli:${opts.cmd[0] ?? ''}`,
+              model: d.model ?? model,
               answers: d.answers as Record<string, JevAnswer>,
               usage: { input_tokens: 0, output_tokens: 0, cached_tokens: 0 },
             });
@@ -186,8 +193,9 @@ export const createJudgeFromConfig = (
     // 自定义 tokenEnv（精确匹配该名）> JEV_TOKEN→TYPESAFE_API_KEY 兜底链
     // （兼容存量）。此前把 env 过滤成单键对象再喂兜底链，两个兜底键都查
     // 不到——自定义名恒 ''（配置进得去、永远 null）。
-    const token = (cfg.cloud?.token ?? '') !== ''
-      ? cfg.cloud!.token!
+    const directToken = cfg.cloud?.token ?? '';
+    const token = directToken !== ''
+      ? directToken
       : (cfg.cloud?.tokenEnv !== undefined && cfg.cloud.tokenEnv !== ''
         ? (env[cfg.cloud.tokenEnv] ?? '')
         : jevTokenFromEnv(env));
@@ -251,9 +259,9 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
   return {
     threshold() {
       try {
-        return deps.load()?.min_confidence ?? 0.7;
+        return deps.load()?.min_confidence ?? DEFAULT_MIN_CONFIDENCE;
       } catch {
-        return 0.7; // 网关不抛：load 缝抛错按缺省阈值降级
+        return DEFAULT_MIN_CONFIDENCE; // 网关不抛：load 缝抛错按缺省阈值降级
       }
     },
     async ask(scenario, state, questions) {
@@ -268,7 +276,7 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
       if (cfg === null || mode === 'off') return null;
       // mode 与 threshold 同源这一次 load，随结果一并返回——消费方以 outcome
       // 为准、不再各自重读配置，热改落在多次读之间的 TOCTOU 窗口就此收口。
-      const base = { mode, provider: `${cfg.provider}`, threshold: cfg.min_confidence ?? 0.7 } as const;
+      const base = { mode, provider: `${cfg.provider}`, threshold: cfg.min_confidence ?? DEFAULT_MIN_CONFIDENCE } as const;
       // 网关不抛纪律覆盖构建/留痕腿：judgeFor（含 judgeOf 与其内部 log）抛错
       // 与判定失败同罪——降级 error 结果，消费方按默认行为走。
       let judge: Judge | null;
