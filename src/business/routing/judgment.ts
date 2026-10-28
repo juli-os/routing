@@ -53,7 +53,12 @@ export const parseJudgmentConfig = (raw: unknown): JudgmentConfig | null => {
   if (rawScenarios !== null && typeof rawScenarios === 'object') {
     const known = new Set<string>(JUDGMENT_SCENARIOS);
     for (const [k, v] of Object.entries(rawScenarios as Record<string, unknown>)) {
-      if (!MODES.includes(String(v))) continue;
+      // 无效模式值同链留痕：'on' 拼成 'alway' 与拼错场景键同爆炸半径（该场景
+      // 静默 off），不反馈则影子评估期同样零信号。
+      if (!MODES.includes(String(v))) {
+        console.error(`[judgment] judgment.json invalid mode for ${k} (dropped): ${String(v)}`);
+        continue;
+      }
       // 未知场景键显式丢弃并留痕（judgment.json 是人工热读面——「想开
       // aggregate_same 写成 aggregate_smae」若无反馈，影子评估期会静默空转）。
       if (!known.has(k)) {
@@ -243,7 +248,12 @@ export const createJudgmentGateway = (deps: JudgmentGatewayDeps): JudgmentGatewa
     try {
       deps.onUsage?.(r);
     } catch (e) {
-      deps.log?.(`[judgment] usage accounting failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
+      // 留痕腿同样不得反噬：log 抛错若穿透 recordUsage，成功路径会跌进 ask 的
+      // 外层 catch（成功判 ok:false），外层 catch 里的 recordUsage 再抛一次则
+      // 直接击穿「网关不抛」——与下方 init/failed 两处留痕同纪律包 try。
+      try {
+        deps.log?.(`[judgment] usage accounting failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
+      } catch { /* log 抛错不得反向破坏网关不抛 */ }
     }
   };
   const judgeFor = (cfg: JudgmentConfig): Judge | null => {

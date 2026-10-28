@@ -15,7 +15,7 @@ The L4 layer of the juli-os ladder: **multi-agent dispatch decisions as pure fun
 
 ## Peel boundary
 
-Copied verbatim from the juli monorepo (`business/routing`), with the pure intake seam (`feedbackSessionFor` + record shape) peeled alongside. Ports (`contracts/ports.ts`) reference artifact types via `@juli-os/artifacts` — the first cross-layer composition of the ladder.
+Copied verbatim from the juli monorepo (`business/routing`), with the pure intake seam (`feedbackSessionFor` + record shape) peeled alongside. Ports (`contracts/ports.ts`) hold only the judgment-gateway contract (scenario union + gateway shape).
 
 Dependencies point strictly downward; consumers import only the facade `src/index.ts`.
 

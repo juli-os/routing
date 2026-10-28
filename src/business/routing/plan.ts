@@ -135,7 +135,7 @@ const agentMenu = (facts: RoutingFacts): Record<string, string> => {
     if (a.cwd !== '') bits.push(`workdir=${a.cwd}`);
     if (a.senders.length > 0) bits.push(`bound senders=${a.senders.join(',')}`);
     const scope = a.description !== '' ? a.description : `owns work where ${bits.join(', ')}`;
-    criteria[a.session] = `Agent session "${a.session}": ${scope}${a.description !== '' && bits.length > 0 ? ` (${bits.join(', ')})` : ''}`;
+    criteria[a.session] = `Agent session "${a.session}": ${scope}${a.description !== '' ? ` (${bits.join(', ')})` : ''}`;
   }
   criteria['uncertain'] = 'No declared agent clearly matches this ticket; a human should decide the route.';
   return criteria;
@@ -235,7 +235,7 @@ export const planRouting = async (
         inputTokens: usage.inputTokens + res.usage.input_tokens,
         outputTokens: usage.outputTokens + res.usage.output_tokens,
       };
-      for (const r of [...pending]) {
+      for (const r of pending) {
         const ans = res.answers[`route_${r.id}`];
         if (ans !== undefined && ans.type === 'choice') {
           lastAttempt.set(r.id, ans);
@@ -270,20 +270,8 @@ export const planRouting = async (
     });
   }
 
-  // 合并成组：同根因对 → 并查集；跨路由同根因 → 冲突上浮不合并。
-  const parent = new Map<string, string>();
-  const find = (x: string): string => {
-    const p = parent.get(x) ?? x;
-    if (p === x) return x;
-    const root = find(p);
-    parent.set(x, root);
-    return root;
-  };
-  const union = (a: string, b: string): void => {
-    const ra = find(a);
-    const rb = find(b);
-    if (ra !== rb) parent.set(ra, rb);
-  };
+  // 合并成组：同根因对同路由 → 记进 mergedPairs（分组按下文 bySession 按会话
+  // 聚，同会话即同组）；跨路由同根因 → 冲突上浮不合并。
   const mergedPairs: { a: string; b: string; noul: number }[] = [];
   const crossRouteDups: RoutingPlan['crossRouteDups'][number][] = [];
   for (const { a, b, noul } of dupScores) {
@@ -292,7 +280,6 @@ export const planRouting = async (
     const rb = routed.get(b.id);
     if (ra !== undefined && rb !== undefined && ra.session !== '' && rb.session !== '') {
       if (ra.session === rb.session) {
-        union(a.id, b.id);
         mergedPairs.push({ a: a.id, b: b.id, noul });
       } else {
         crossRouteDups.push({ a: a.id, b: b.id, noul, sessions: [ra.session, rb.session] });
@@ -340,7 +327,6 @@ export const planRouting = async (
   });
   const needsHumanFinal = needsHuman.map((t) => ({ ...t, dupWith: dupWithOf(t.record.id) }));
 
-  const resolvedJev = [...routed.values()].filter((t) => t.via === 'jev');
   return {
     dryRun: true,
     model: noJudge ? 'baseline-only' : opts.judge!.model,
@@ -355,9 +341,11 @@ export const planRouting = async (
       merged: mergedPairs.length,
       crossRouteDups: crossRouteDups.length,
       unresolved: needsHumanFinal.length,
+      // judge 模式下 routed 只收 jev 判定（唯一写入点），agreeWithBaseline
+      // 的分母即全部已定单。
       agreeWithBaseline: noJudge
         ? records.length
-        : resolvedJev.filter((t) => t.session === t.baseline.session).length,
+        : [...routed.values()].filter((t) => t.session === t.baseline.session).length,
     },
   };
 };
