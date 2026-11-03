@@ -1,0 +1,9 @@
+site_name: '@juli-os/routing'
+docs_dir: docs
+strict: true
+theme:
+  name: material
+  language: zh
+nav:
+  - 首页: index.md
+  - API 参考: api/index.md
